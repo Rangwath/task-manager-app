@@ -1,35 +1,58 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Task, CreateTaskRequest, Priority, Category, ApiResponse, TaskFilters } from '@/types/task';
-import rawTasksData from '@/data/tasks.json';
+import fs from 'fs/promises';
+import path from 'path';
 
-// In-memory storage for runtime modifications (resets on deployment)
-const tasksData = rawTasksData as Task[];
-let runtimeTasks: Task[] = [...tasksData];
+const TASKS_FILE_PATH = path.join(process.cwd(), 'src', 'data', 'tasks.json');
+
+// Helper function to read tasks from file
+async function readTasksFromFile(): Promise<Task[]> {
+  try {
+    const fileContent = await fs.readFile(TASKS_FILE_PATH, 'utf-8');
+    return JSON.parse(fileContent) as Task[];
+  } catch (error) {
+    console.error('Error reading tasks file:', error);
+    return [];
+  }
+}
+
+// Helper function to write tasks to file
+async function writeTasksToFile(tasks: Task[]): Promise<void> {
+  try {
+    await fs.writeFile(TASKS_FILE_PATH, JSON.stringify(tasks, null, 2), 'utf-8');
+  } catch (error) {
+    console.error('Error writing tasks file:', error);
+    throw error;
+  }
+}
 
 // GET /api/tasks - Fetch all tasks
 export async function GET(request: NextRequest) {
   console.log('📥 GET /api/tasks called');
-  
+
   try {
+    // Read tasks from file
+    const allTasks = await readTasksFromFile();
+
     // Extract and apply filters from query parameters
     const { searchParams } = new URL(request.url);
     const filters: TaskFilters = {
       category: searchParams.get('category') as Category || undefined,
       priority: searchParams.get('priority') as Priority || undefined,
-      completed: searchParams.get('completed') === 'true' ? true : 
+      completed: searchParams.get('completed') === 'true' ? true :
                  searchParams.get('completed') === 'false' ? false : undefined,
       search: searchParams.get('search') || undefined
     };
 
     // Apply filters if any are provided
-    const filteredTasks = applyFilters(runtimeTasks, filters);
-    
+    const filteredTasks = applyFilters(allTasks, filters);
+
     // Build response message
     let message = `Found ${filteredTasks.length} tasks`;
-    if (filteredTasks.length !== runtimeTasks.length) {
-      message += ` (filtered from ${runtimeTasks.length} total)`;
+    if (filteredTasks.length !== allTasks.length) {
+      message += ` (filtered from ${allTasks.length} total)`;
     }
-    
+
     const response: ApiResponse<Task[]> = {
       data: filteredTasks,
       success: true,
@@ -50,14 +73,14 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST /api/tasks - Create new task (stored in memory until deployment)
+// POST /api/tasks - Create new task (persisted to file)
 export async function POST(request: NextRequest) {
   console.log('📥 POST /api/tasks called');
-  
+
   try {
     const body: CreateTaskRequest = await request.json();
     console.log('📨 Received data:', body);
-    
+
     // Enhanced validation
     const validationErrors = validateTaskRequest(body);
     if (validationErrors.length > 0) {
@@ -82,29 +105,31 @@ export async function POST(request: NextRequest) {
       dueDate: body.dueDate || undefined
     };
 
-    // Add to runtime storage
-    runtimeTasks.push(newTask);
-    
+    // Read current tasks, add new task, and write back to file
+    const currentTasks = await readTasksFromFile();
+    currentTasks.push(newTask);
+    await writeTasksToFile(currentTasks);
+
     console.log('✅ Created new task:', newTask);
-    console.log(`📊 Total tasks now: ${runtimeTasks.length}`);
+    console.log(`📊 Total tasks now: ${currentTasks.length}`);
 
     const response: ApiResponse<Task> = {
       data: newTask,
       success: true,
-      message: 'Task created successfully (stored in memory - persists until server restart)'
+      message: 'Task created successfully and saved to file'
     };
 
     return NextResponse.json(response, { status: 201 });
 
   } catch (error) {
     console.error('❌ Error in POST /api/tasks:', error);
-    
+
     const errorResponse: ApiResponse<null> = {
       data: null,
       success: false,
       error: 'Failed to create task'
     };
-    
+
     return NextResponse.json(errorResponse, { status: 500 });
   }
 }
